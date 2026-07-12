@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+venv/
+.pytest_cache/
+
+# Datasets & Weights
+data/
+# Experiment Runs (excluding the list catalog)
+web/runs/run_*.json
+!web/runs/runs_list.json
+web/data.json
+
+# macOS
+.DS_Store
+
