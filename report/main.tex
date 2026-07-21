@@ -33,7 +33,7 @@
 
 \begin{abstract}
 Graph Neural Networks (GNNs) have emerged as the state-of-the-art paradigm for learning representation from graph-structured data. However, the black-box nature of these models hinders their deployment in high-stakes domains such as financial fraud detection, drug discovery, and medical networks. While various Graph Explainable AI (XAI) methods have been developed to explain GNN predictions by identifying salient subgraphs, their sensitivity to topological perturbations remains largely unexamined. In this work, we present a comparative benchmark of three prominent graph explanation paradigms: GNNExplainer (perturbation-based), Subgraph MCTS (search-based), and Counterfactual Explanations (contrastive). We evaluate their performance under three adversarial topology perturbation models: Random Edge Perturbations, Degree-Targeted Perturbations, and Homophily-Disrupting Perturbations. 
-Furthermore, we propose two novel extensions to GNN explainability: (1) \textbf{XAI-Guided Topological Defense}, demonstrating that explanation masks can be leveraged to prune adversarial noise and restore model accuracy, and (2) \textbf{Homophily Attribution Invariance Analysis}, examining how explanation models prioritize homophilous vs. heterophilous connections under structural drift. Our experimental results on the Cora citation network show that search-based methods (Subgraph MCTS) display significantly greater topological robustness compared to gradient/perturbation-based models (GNNExplainer), establishing a new frontier for developing reliable GNN explanation interfaces.
+Furthermore, we implement and evaluate two extensions to GNN explainability: (1) \textbf{Homophily Attribution Invariance Analysis}, a metric (HAI) examining how explanation models prioritize homophilous vs. heterophilous connections under structural drift, and (2) \textbf{XAI-Guided Topological Defense}, testing whether explanation masks can be used to prune adversarial noise and restore predictions. Our experimental results on the Cora citation network show that, across all three perturbation models, the target's prediction remains invariant while its explanation does not, confirming that explanation instability is a distinct failure mode from prediction instability. We find that the contrastive counterfactual explainer and the search-based Subgraph MCTS are markedly more stable under topological attack (mean top-$k$ Jaccard $\approx 0.75$ and $0.62$ respectively at $10\%$ random perturbation) than the perturbation-based GNNExplainer ($\approx 0.18$), and that GNNExplainer's highest-weight edges are frequently not the causally load-bearing ones on this GCN backbone. Our defense experiment is a negative result: naive attribution-thresholded pruning does not restore the target-class probability, indicating that a more selective, injection-aware sparsifier is required. Together these establish a reproducible pipeline and a set of honest baselines for developing reliable GNN explanation interfaces.
 \end{abstract}
 
 \section{Introduction}
@@ -44,10 +44,10 @@ Explainable AI (XAI) for GNNs aims to resolve this issue by identifying the most
 However, a critical research gap exists: \textbf{How robust are these attribution methods to changes in the graph's topology?} GNN message passing is highly vulnerable to adversarial edge additions or deletions~\citep{zugner2018adversarial}. If a small structural perturbation (e.g., adding a few random, irrelevant citation edges) completely changes the explanation output while the GNN's prediction remains invariant, the explanation lacks robustness. This fragility poses severe security risks and degrades user trust.
 
 \subsection{Unique Research Angles Introduced in This Project}
-To elevate this project beyond standard benchmarks and present a compelling research direction for a PhD proposal, we introduce two unique concepts:
+Beyond the core benchmark, we implement and evaluate two additional analyses:
 \begin{enumerate}
-    \item \textbf{XAI-Guided Topological Defense (Sparsification)}: We propose utilizing explanation masks as dynamic topological filters. By pruning edges that receive low attribution scores from explainers, we filter out adversarial perturbations, effectively defending the GNN model from topological attacks.
-    \item \textbf{Homophily Attribution Invariance (HAI)}: We analyze how structural perturbations disrupt the local homophily of explanations. GCN models~\citep{kipf2016semi} rely heavily on local homophily (the homophily assumption that connected nodes share the same label). We evaluate the percentage of homophilous edges in the explanation before and after attacks, characterizing the shift in the explainer's focus.
+    \item \textbf{Homophily Attribution Invariance (HAI)}: We analyze how structural perturbations disrupt the local homophily of explanations. GCN models~\citep{kipf2016semi} rely heavily on local homophily (the homophily assumption that connected nodes share the same label). We measure the fraction of homophilous edges in the explanation before and after attacks, characterizing the shift in the explainer's focus.
+    \item \textbf{XAI-Guided Topological Defense (Sparsification)}: We test whether explanation masks can act as dynamic topological filters. By pruning neighborhood edges that receive low attribution scores, we ask whether adversarial perturbations can be filtered out to defend the GNN --- and report where this naive approach succeeds and where it fails.
 \end{enumerate}
 
 \section{Related Work \& Background}
@@ -100,51 +100,71 @@ Let $E^0_{exp}$ be the set of top-$k$ explanatory edges generated on the clean g
 \end{equation}
 A high, flat Jaccard curve across perturbation rates $\epsilon$ signifies a robust explainer.
 
-\section{Novel Extensions (PhD Research Angles)}
+\section{Extensions and Their Empirical Behavior}
+Both extensions below are implemented in \texttt{extensions.py} and evaluated by the same pipeline; their outputs are recorded per node in the run artifact and aggregated alongside the fidelity and robustness metrics.
 
-\subsection{Extension 1: XAI-Guided Topological Defense}
-To prove the utility of explanation masks beyond visualization, we propose an explanation-driven defense mechanism. If an attacker injects noise edges into the neighborhood, the GNN's accuracy drops. We define the **XAI Sparsifier** which prunes the graph topology based on explainer confidence:
-\begin{equation}
-    E_{defended} = \{e \in E \mid \text{Score}_{XAI}(e) \ge \tau \}
-\end{equation}
-where $\tau$ is a filtering threshold. By restricting message passing to $E_{defended}$, we filter out adversarial injections, restoring GNN classification accuracy.
-
-\subsection{Extension 2: Homophily Attribution Invariance (HAI)}
-We analyze how topological perturbations shift the explainer's focus away from class homophily. We define the **Homophily Attribution Index (HAI)** of an explanation as:
+\subsection{Extension 1: Homophily Attribution Invariance (HAI)}
+We quantify how much of an explanation's attribution weight lands on homophilous (same-label) edges. We define the \textbf{Homophily Attribution Index (HAI)} of an explanation as:
 \begin{equation}
     \text{HAI}(E_{exp}) = \frac{\sum_{e=(u,w) \in E_{exp}} \mathbb{I}(y_u = y_w) \cdot M(e)}{\sum_{e \in E_{exp}} M(e)}
 \end{equation}
-where $M(e)$ is the edge explanation weight. Comparing $\text{HAI}(E^0_{exp})$ and $\text{HAI}(E^{\epsilon}_{exp})$ reveals whether the explainer is distracted by adversarial cross-class connections.
+where $M(e)$ is the edge explanation weight (uniform for the binary top-$k$ masks used here, so HAI reduces to the same-label edge fraction). Comparing $\text{HAI}(E^0_{exp})$ and $\text{HAI}(E^{\epsilon}_{exp})$ reveals whether the explainer is distracted by adversarial cross-class connections. Empirically, all three explainers are strongly homophily-focused on the clean graph (mean clean HAI: GNNExplainer $0.84$, Subgraph MCTS $0.88$, Counterfactual $0.96$), consistent with the GCN's reliance on the homophily assumption. The homophily-disrupting attack is the only one that measurably shifts attribution toward cross-class edges, and only for GNNExplainer (mean HAI shift $-0.08$ at $\epsilon = 0.10$); the connected-subgraph and counterfactual explanations retain their homophilous focus (shift $\approx 0.00$). This mirrors the robustness result: the same structural priors that stabilize MCTS and the counterfactual explainer also insulate their homophily profile from attack.
+
+\subsection{Extension 2: XAI-Guided Topological Defense}
+We test whether explanation masks can be used defensively. After an attacker injects edges into the target's neighborhood, we run GNNExplainer on the perturbed graph, compute an attribution threshold $\tau$ (the median neighborhood-edge score), and keep only the higher-attribution neighborhood edges while preserving the rest of the graph:
+\begin{equation}
+    E_{defended} = \{e \in E \setminus E_{local} \} \cup \{e \in E_{local} \mid \text{Score}_{XAI}(e) \ge \tau \}
+\end{equation}
+The hypothesis is that injected adversarial edges receive low attribution and are pruned, restoring the target-class probability. \textbf{Our experiment does not support this hypothesis in its naive form.} Averaged over the evaluation nodes at $\epsilon = 0.10$, the target-class probability moves clean $\to$ attacked $\to$ defended as $0.914 \to 0.885 \to 0.822$ (random), $0.914 \to 0.916 \to 0.770$ (degree), and $0.914 \to 0.902 \to 0.788$ (homophily): defense \emph{lowers} the probability rather than restoring it, because thresholding at the median removes roughly half of all neighborhood edges --- including genuine, prediction-supporting ones --- not just the sparse injected noise. This is an informative negative result: a useful XAI-guided sparsifier must distinguish injected edges from load-bearing ones (e.g. via a much higher threshold, or by scoring only \emph{added} edges), rather than pruning by raw attribution rank. We leave a selective, injection-aware sparsifier to future work.
 
 \section{Experimental Evaluation}
 We validate our framework on the Cora citation network~\citep{sen2008collective}. The GCN model consists of two Graph Convolutional layers, trained to a test accuracy of \textbf{81.30\%}. We select five high-confidence test nodes as explanation targets.
 
+All metrics below are means over the five evaluation nodes, computed by \texttt{aggregate.py} directly from the saved run artifact (\texttt{web/results\_summary.json}) rather than transcribed by hand. Explanation edges are restricted to the target's 2-hop receptive field, since edges outside it cannot influence a 2-layer GCN's prediction.
+
 \subsection{Fidelity Comparison}
-Table~\ref{tab:fidelity} presents the average Fidelity-minus ($F^{-}$) and Fidelity-plus ($F^{+}$) scores. GNNExplainer achieves strong Fidelity-minus drops, but Subgraph MCTS yields superior (smaller) Fidelity-plus values, indicating that MCTS extracts a more self-sufficient, connected structure.
+Table~\ref{tab:fidelity} presents the average Fidelity-minus ($F^{-}$) and Fidelity-plus ($F^{+}$) scores. The contrastive counterfactual explainer and the search-based Subgraph MCTS both recover load-bearing, self-sufficient edge sets: they achieve the largest $F^{-}$ drops (the target-class probability falls sharply when their edges are removed) together with near-zero or negative $F^{+}$ (the prediction survives on their edges alone). GNNExplainer, by contrast, yields a low $F^{-}$: its highest-weight mask edges are frequently \emph{not} the causally important ones. On inspection, GNNExplainer does rank the target-incident edges near the 95th mask percentile, but a handful of other neighborhood edges receive still-higher weight and dominate the top-$k$, so the extracted explanation misses the edges that actually drive the prediction.
 
 \begin{table}[h]
 \centering
-\caption{Fidelity evaluation on clean Cora dataset (top-$k=5$ edges).}
+\caption{Fidelity evaluation on clean Cora dataset (top-$k=5$ edges, mean over 5 nodes).}
 \label{tab:fidelity}
 \begin{tabular}{lccc}
 \toprule
 \textbf{Method} & \textbf{Fidelity-minus ($F^{-}$)} $\uparrow$ & \textbf{Fidelity-plus ($F^{+}$)} $\downarrow$ & \textbf{Structure Type} \\ \midrule
-GNNExplainer & 0.284 & 0.125 & Sparse Edges \\
-Subgraph MCTS & 0.221 & 0.084 & Connected Subgraph \\
-Counterfactual & 0.385 & 0.442 & Contrastive Edges \\ \bottomrule
+GNNExplainer & 0.013 & 0.138 & Sparse Edges \\
+Subgraph MCTS & 0.197 & -0.039 & Connected Subgraph \\
+Counterfactual & 0.298 & -0.058 & Contrastive Edges \\ \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Robustness Under Perturbations}
-Our experiments show a distinct performance gap in explanation stability:
+A central observation makes the robustness question well-posed: across all three attacks and all rates $\epsilon \in \{0.01, 0.05, 0.10, 0.15\}$, the target node's predicted \emph{label} never flips (prediction flip rate $= 0.00$). Explanation instability is therefore a genuinely separate failure mode from prediction instability --- any change in the explanation is not merely tracking a change in the underlying decision. Table~\ref{tab:robust} reports the mean top-$k$ Jaccard overlap between the clean and perturbed explanations.
+
+\begin{table}[h]
+\centering
+\caption{Explanation robustness: mean top-$k$ Jaccard vs. the clean explanation, under Random / Degree / Homophily attacks at $\epsilon = 0.10$.}
+\label{tab:robust}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Method} & \textbf{Random} & \textbf{Degree} & \textbf{Homophily} \\ \midrule
+GNNExplainer & 0.18 & 0.16 & 0.18 \\
+Subgraph MCTS & 0.62 & 0.62 & 0.62 \\
+Counterfactual & 0.75 & 0.87 & 0.93 \\ \bottomrule
+\end{tabular}
+\end{table}
+
 \begin{itemize}
-    \item \textbf{GNNExplainer Fragility}: GNNExplainer Jaccard similarity drops to **0.31** under a 10\% Random Edge perturbation. Because it optimizes continuous parameters per edge, introducing new edges changes the gradient paths, altering the optimization output.
-    \item \textbf{Subgraph MCTS Robustness}: Subgraph MCTS maintains a Jaccard similarity of **0.68** at 10\% perturbation. Since MCTS searches connected subgraphs, it ignores isolated, noisy edge additions that fail to form strong functional motifs with the target node.
+    \item \textbf{GNNExplainer fragility}: GNNExplainer's Jaccard sits at $\approx 0.18$ under $10\%$ perturbation and stays low across all three attacks. Because it optimizes continuous per-edge parameters, injected edges shift the gradient landscape and reshuffle which edges surface in the top-$k$.
+    \item \textbf{Subgraph MCTS stability}: Subgraph MCTS holds a strikingly flat Jaccard of $\approx 0.62$ regardless of attack type or rate. Because it searches for a \emph{connected} subgraph anchored at the target, isolated noisy edges that fail to form a functional motif with the target are never selected.
+    \item \textbf{Counterfactual stability}: The counterfactual explainer is the most stable ($0.75$--$0.93$), as the minimal edge edit that flips a confident node's prediction is typically a small, well-determined set of target-incident edges that the perturbations rarely disturb.
 \end{itemize}
 
 
 \section{Conclusion}
-This report benchmarks GNN explainability robustness under topological attacks. Our comparative study shows that connected-subgraph explainers (Subgraph MCTS) are structurally more stable than gradient-based explainers under topological noise. We demonstrate that explanation masks can be utilized for topological defense, highlighting a promising pathway for security-aware interpretable graph learning.
+This report benchmarks GNN explainability robustness under topological attacks on a GCN/Cora backbone, with all reported numbers regenerated from a saved run artifact. Two findings stand out. First, target predictions are invariant under every attack we apply while explanations are not, establishing explanation instability as a failure mode in its own right. Second, explainers with structural priors --- the connected-subgraph search (Subgraph MCTS) and the contrastive counterfactual method --- are substantially more stable, and more faithful, than the continuous per-edge GNNExplainer, whose top-weight edges are often not the causally load-bearing ones. Our XAI-guided defense is a deliberate negative result: naive attribution-thresholded pruning does not restore accuracy, and a practical defense must instead isolate injected edges from genuine ones. We view these honest baselines, together with the reproducible pipeline and the HAI attribution-shift metric, as a foundation for security-aware interpretable graph learning.
+
+\paragraph{Limitations.} Results are averaged over five high-confidence nodes on a single dataset (Cora) and architecture (GCN); we report point estimates without confidence intervals, and the perturbation for each (node, attack, rate) is sampled once. The Subgraph MCTS implementation is a simplified reimplementation (UCT with a probability-minus-size reward), not the original Shapley-based SubgraphX. Extending to multiple seeds, heterophilous graphs, and a GAT backbone is left to future work.
 
 \bibliographystyle{plainnat}
 \bibliography{ref.bib}

@@ -23,11 +23,25 @@ def get_local_neighborhood(node_idx, num_hops, edge_index, x, y):
     return subset, sub_edge_index, mapping, x[subset], y[subset]
 
 # --- 1. GNNExplainer Wrapper ---
-def run_gnn_explainer(model, x, edge_index, node_idx, num_classes):
+def run_gnn_explainer(model, x, edge_index, node_idx, num_classes, num_hops=2):
     """
     Runs PyG's GNNExplainer to explain the prediction of a target node.
+
+    GNNExplainer is run on the target's k-hop computation subgraph (its canonical
+    usage) rather than the whole graph: optimizing a mask over all |E| edges lets
+    the weight diffuse onto edges that cannot influence the target, yielding
+    poorly localized, low-fidelity explanations. We then map the subgraph edge
+    mask back onto the global edge index so downstream code is unchanged.
     """
     model.eval()
+
+    # Restrict to the target's receptive field.
+    subset, sub_edge_index, mapping, edge_mask_hop = k_hop_subgraph(
+        node_idx=node_idx, num_hops=num_hops, edge_index=edge_index, relabel_nodes=True
+    )
+    sub_x = x[subset]
+    local_target = int(mapping.item())
+
     explainer = Explainer(
         model=model,
         algorithm=GNNExplainer(epochs=200),
@@ -40,9 +54,27 @@ def run_gnn_explainer(model, x, edge_index, node_idx, num_classes):
             return_type='log_probs'
         ),
     )
-    # Generate explanation
-    explanation = explainer(x, edge_index, target_index=node_idx)
-    return explanation.edge_mask.cpu().numpy()
+    explanation = explainer(sub_x, sub_edge_index, target_index=local_target)
+    sub_mask = explanation.edge_mask.cpu().numpy()
+
+    # Map the subgraph mask back to a full-size global edge mask.
+    global_mask = np.zeros(edge_index.size(1))
+    subset_list = subset.cpu().numpy().tolist()
+    edge_lookup = {}
+    gu = edge_index[0].cpu().numpy()
+    gv = edge_index[1].cpu().numpy()
+    for i in range(edge_index.size(1)):
+        edge_lookup[(int(gu[i]), int(gv[i]))] = i
+
+    su = sub_edge_index[0].cpu().numpy()
+    sv = sub_edge_index[1].cpu().numpy()
+    for j in range(sub_edge_index.size(1)):
+        g = (subset_list[su[j]], subset_list[sv[j]])
+        gi = edge_lookup.get(g)
+        if gi is not None:
+            global_mask[gi] = sub_mask[j]
+
+    return global_mask
 
 # --- 2. Custom Subgraph MCTS Explainer (Inspired by SubgraphX) ---
 class SubgraphMCTS:

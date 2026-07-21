@@ -30,34 +30,52 @@ This project benchmarks three explanation paradigms under three adversarial pert
 - **Fidelity-plus (F⁺)** — prediction drop when *only* explanatory edges are kept
 - **Jaccard Robustness** — overlap between clean-graph and perturbed-graph explanations across perturbation rates
 
-## Novel Contributions
+## Extensions (implemented in `extensions.py`)
 
-1. **XAI-Guided Topological Defense** — using explanation confidence scores to sparsify/prune adversarial edges and restore classification accuracy.
-2. **Homophily Attribution Invariance (HAI)** — a metric quantifying how much an explanation's focus shifts from homophilous to heterophilous edges under structural attack.
+1. **Homophily Attribution Invariance (HAI)** — a metric quantifying how much of an explanation's attribution weight sits on homophilous (same-label) edges, and how far that shifts under structural attack.
+2. **XAI-Guided Topological Defense** — a sparsifier that prunes low-attribution neighborhood edges after an attack, testing whether explanation scores can filter adversarial injections.
 
-## Key Findings (Cora, GCN, top-k=5)
+## Key Findings (Cora, GCN, top-k=5, mean over 5 nodes)
 
-| Method | F⁻ ↑ | F⁺ ↓ | Structure |
-|---|---|---|---|
-| GNNExplainer | 0.284 | 0.125 | Sparse edges |
-| Subgraph MCTS | 0.221 | 0.084 | Connected subgraph |
-| Counterfactual | 0.385 | 0.442 | Contrastive edges |
+All numbers below are regenerated from a saved run by `aggregate.py` (see [SUMMARY.md](SUMMARY.md)), not hand-written. Explanations are restricted to the target's 2-hop receptive field.
 
-- GNNExplainer's Jaccard similarity collapses to **0.31** under 10% random edge perturbation.
-- Subgraph MCTS retains **0.68** Jaccard similarity at the same perturbation rate, showing greater structural robustness.
+| Method | F⁻ ↑ | F⁺ ↓ | Clean HAI | Structure |
+|---|---|---|---|---|
+| GNNExplainer | 0.013 | 0.138 | 0.84 | Sparse edges |
+| Subgraph MCTS | 0.197 | −0.039 | 0.88 | Connected subgraph |
+| Counterfactual | 0.298 | −0.058 | 0.96 | Contrastive edges |
+
+- **Predictions never flip** under any attack at any rate (flip rate 0.00) — so explanation instability is a *distinct* failure mode from prediction instability.
+- **Robustness (mean top-k Jaccard @ 10% random perturbation):** Counterfactual ≈ **0.75**, Subgraph MCTS ≈ **0.62** (strikingly flat across all attacks), GNNExplainer ≈ **0.18**. Explainers with structural priors are far more stable than the continuous per-edge mask.
+- **GNNExplainer's low fidelity is real:** its highest-weight mask edges are frequently *not* the causally load-bearing ones (target-incident edges rank ~95th percentile but a few other edges outrank them and dominate the top-k).
+- **Defense is a negative result:** naive median-threshold pruning removes ~half the neighborhood and *lowers* the target-class probability rather than restoring it — a selective, injection-aware sparsifier is needed.
 
 ## Dataset
 
 - **Cora** citation network, 2-layer GCN backbone, test accuracy 81.30%.
 
+## Reproduce
+
+```bash
+python setup_env.py        # create .venv and install requirements
+python train_gnn.py        # train the GCN, saves data/gcn_cora.pt
+python evaluate.py         # run explainers + attacks + extensions -> web/data.json
+python aggregate.py        # reduce the run to SUMMARY.md + web/results_summary.json
+python run_dashboard.py    # serve the interactive dashboard at localhost:8000
+```
+
+`evaluate.py` is stochastic (MCTS rollouts and perturbation sampling are random), so exact numbers vary run to run; `aggregate.py` always reflects the latest `web/data.json`.
+
 ## Future Directions
 
+- A selective, injection-aware sparsifier (score only *added* edges) to turn the defense into a positive result
+- Multiple seeds and confidence intervals; heterophilous datasets; a GAT backbone
 - Contrastive explanation regularization to penalize instability under perturbation
 - Dynamic, explanation-guided message passing (self-explaining GNN layers)
 
 ## Citation
 
-If you use this work, please cite the accompanying report (see `paper/`).
+If you use this work, please cite the accompanying report (see `report/`).
 
 ## License
 

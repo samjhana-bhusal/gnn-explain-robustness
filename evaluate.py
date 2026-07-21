@@ -14,21 +14,56 @@ from explainers import (
     CounterfactualExplainer,
     perturb_graph_topology
 )
+from extensions import (
+    homophily_attribution_index,
+    hai_shift,
+    xai_guided_defense,
+)
 
-def get_top_edges(edge_index, edge_mask, k=5):
+# Perturbation rate at which the XAI-guided defense is demonstrated.
+DEFENSE_RATE = 0.10
+
+def get_top_edges(edge_index, edge_mask, k=5, allowed_nodes=None, target_idx=None):
     """
-    Returns the top K edges as list of node tuples (u, v) based on edge mask.
+    Returns up to k undirected (u, v) explanatory edges, highest mask first.
+
+    allowed_nodes: if given, only edges with BOTH endpoints in this set are
+        eligible. For node-level explanation this must be the target's k-hop
+        receptive field -- edges outside it cannot influence a k-layer GNN's
+        prediction, so they must never appear in the explanation. Without this
+        filter, top-k taken over the whole graph can select edges nowhere near
+        the target (which makes fidelity and robustness meaningless).
+    target_idx: if given, edges incident to the target break ties among equal
+        mask values, so dense binary masks (e.g. the MCTS subgraph mask) still
+        yield target-centered edges instead of arbitrary ones.
     """
-    # Sort edge indices by mask value descending
-    sorted_indices = np.argsort(edge_mask)[::-1]
-    top_indices = sorted_indices[:k]
-    
+    u_arr = edge_index[0].cpu().numpy()
+    v_arr = edge_index[1].cpu().numpy()
+
+    candidates = []
+    for idx in range(edge_index.size(1)):
+        u, v = int(u_arr[idx]), int(v_arr[idx])
+        if allowed_nodes is not None and (u not in allowed_nodes or v not in allowed_nodes):
+            continue
+        m = float(edge_mask[idx])
+        if m <= 0.0:
+            continue
+        incident = 1 if (target_idx is not None and (u == target_idx or v == target_idx)) else 0
+        candidates.append((m, incident, u, v))
+
+    # Highest mask first; among equal masks, prefer target-incident edges.
+    candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
+
     top_edges = []
-    for idx in top_indices:
-        if edge_mask[idx] > 0.0:
-            u, v = edge_index[0, idx].item(), edge_index[1, idx].item()
-            # Sort node IDs to treat edges as undirected
-            top_edges.append((min(u, v), max(u, v)))
+    seen = set()
+    for m, incident, u, v in candidates:
+        e = (min(u, v), max(u, v))
+        if e in seen:  # collapse the two directed copies of an undirected edge
+            continue
+        seen.add(e)
+        top_edges.append(e)
+        if len(top_edges) == k:
+            break
     return top_edges
 
 def compute_fidelity(model, x, edge_index, target_idx, pred_class, explanation_edges):
@@ -188,6 +223,7 @@ def main():
             node_idx, 2, data.edge_index, data.x, data.y
         )
         subset_list = subset.cpu().numpy().tolist()
+        neighborhood = set(subset_list)  # target's 2-hop receptive field
         
         # Convert local neighborhood to networkx for formatting
         local_nodes = []
@@ -212,21 +248,26 @@ def main():
         # 2. Run Explainers on clean graph
         print("  Running GNNExplainer...")
         mask_gnn = run_gnn_explainer(model, data.x, data.edge_index, node_idx, dataset.num_classes)
-        edges_gnn = get_top_edges(data.edge_index, mask_gnn, k=5)
-        
+        edges_gnn = get_top_edges(data.edge_index, mask_gnn, k=5, allowed_nodes=neighborhood, target_idx=node_idx)
+
         print("  Running SubgraphMCTS...")
         mask_mcts = mcts_explainer.explain(data.x, data.edge_index, node_idx, pred_class)
-        edges_mcts = get_top_edges(data.edge_index, mask_mcts, k=5)
-        
+        edges_mcts = get_top_edges(data.edge_index, mask_mcts, k=5, allowed_nodes=neighborhood, target_idx=node_idx)
+
         print("  Running CounterfactualExplainer...")
         mask_cf = cf_explainer.explain(data.x, data.edge_index, node_idx, pred_class)
-        edges_cf = get_top_edges(data.edge_index, mask_cf, k=5)
+        edges_cf = get_top_edges(data.edge_index, mask_cf, k=5, allowed_nodes=neighborhood, target_idx=node_idx)
         
         # 3. Compute Fidelity on clean graph
         fid_m_gnn, fid_p_gnn, p_orig, p_m_gnn, p_p_gnn = compute_fidelity(model, data.x, data.edge_index, node_idx, pred_class, edges_gnn)
         fid_m_mcts, fid_p_mcts, _, p_m_mcts, p_p_mcts = compute_fidelity(model, data.x, data.edge_index, node_idx, pred_class, edges_mcts)
         fid_m_cf, fid_p_cf, _, p_m_cf, p_p_cf = compute_fidelity(model, data.x, data.edge_index, node_idx, pred_class, edges_cf)
-        
+
+        # 3b. Homophily Attribution Index (HAI) on the clean explanations
+        hai_clean_gnn = homophily_attribution_index(edges_gnn, data.y)
+        hai_clean_mcts = homophily_attribution_index(edges_mcts, data.y)
+        hai_clean_cf = homophily_attribution_index(edges_cf, data.y)
+
         node_record = {
             "node_idx": node_idx,
             "true_class": int(data.y[node_idx].item()),
@@ -246,12 +287,33 @@ def main():
                 "subgraph_mcts": {"fid_minus": fid_m_mcts, "fid_plus": fid_p_mcts, "p_minus": p_m_mcts, "p_plus": p_p_mcts},
                 "counterfactual": {"fid_minus": fid_m_cf, "fid_plus": fid_p_cf, "p_minus": p_m_cf, "p_plus": p_p_cf}
             },
+            "hai_clean": {
+                "gnn_explainer": hai_clean_gnn,
+                "subgraph_mcts": hai_clean_mcts,
+                "counterfactual": hai_clean_cf
+            },
             "robustness": {
                 "gnn_explainer": {},
                 "subgraph_mcts": {},
                 "counterfactual": {}
-            }
+            },
+            "defense": {}
         }
+
+        # 3c. Extension 2 -- XAI-Guided Topological Defense.
+        # Attack the neighborhood, then prune low-attribution edges and measure recovery.
+        print(f"  Running XAI-guided defense (rate={DEFENSE_RATE})...")
+        for method in perturbation_methods:
+            attacked_edge_index = perturb_graph_topology(
+                data.edge_index, data.y, perturbation_rate=DEFENSE_RATE,
+                method=method, target_nodes=subset_list
+            )
+            dres = xai_guided_defense(
+                model, data.x, attacked_edge_index, node_idx,
+                pred_class, dataset.num_classes, keep_percentile=50.0
+            )
+            dres["clean_prob"] = pred_prob
+            node_record["defense"][method] = dres
         
         # 4. Evaluate robustness under adversarial topology perturbation
         for method in perturbation_methods:
@@ -272,24 +334,41 @@ def main():
                     pert_pred = out_pert[node_idx].argmax().item()
                     pert_prob = torch.exp(out_pert[node_idx])[pred_class].item()
                     
+                # Perturbed graph changes the receptive field, so recompute it.
+                p_subset, _, _, _, _ = get_local_neighborhood(
+                    node_idx, 2, perturbed_edge_index, data.x, data.y
+                )
+                p_neighborhood = set(p_subset.cpu().numpy().tolist())
+
                 # Re-explain on perturbed graph
                 p_mask_gnn = run_gnn_explainer(model, data.x, perturbed_edge_index, node_idx, dataset.num_classes)
-                p_edges_gnn = get_top_edges(perturbed_edge_index, p_mask_gnn, k=5)
-                
+                p_edges_gnn = get_top_edges(perturbed_edge_index, p_mask_gnn, k=5, allowed_nodes=p_neighborhood, target_idx=node_idx)
+
                 p_mask_mcts = mcts_explainer.explain(data.x, perturbed_edge_index, node_idx, pred_class)
-                p_edges_mcts = get_top_edges(perturbed_edge_index, p_mask_mcts, k=5)
-                
+                p_edges_mcts = get_top_edges(perturbed_edge_index, p_mask_mcts, k=5, allowed_nodes=p_neighborhood, target_idx=node_idx)
+
                 p_mask_cf = cf_explainer.explain(data.x, perturbed_edge_index, node_idx, pred_class)
-                p_edges_cf = get_top_edges(perturbed_edge_index, p_mask_cf, k=5)
+                p_edges_cf = get_top_edges(perturbed_edge_index, p_mask_cf, k=5, allowed_nodes=p_neighborhood, target_idx=node_idx)
                 
                 # Jaccard similarity with original explanations
                 jacc_gnn = jaccard_similarity(edges_gnn, p_edges_gnn)
                 jacc_mcts = jaccard_similarity(edges_mcts, p_edges_mcts)
                 jacc_cf = jaccard_similarity(edges_cf, p_edges_cf)
-                
-                node_record["robustness"]["gnn_explainer"][method].append({"rate": rate, "jaccard": jacc_gnn, "pred_flipped": pert_pred != pred_class})
-                node_record["robustness"]["subgraph_mcts"][method].append({"rate": rate, "jaccard": jacc_mcts, "pred_flipped": pert_pred != pred_class})
-                node_record["robustness"]["counterfactual"][method].append({"rate": rate, "jaccard": jacc_cf, "pred_flipped": pert_pred != pred_class})
+
+                # Homophily Attribution Index on the perturbed explanations + shift vs clean
+                hai_p_gnn = homophily_attribution_index(p_edges_gnn, data.y)
+                hai_p_mcts = homophily_attribution_index(p_edges_mcts, data.y)
+                hai_p_cf = homophily_attribution_index(p_edges_cf, data.y)
+
+                node_record["robustness"]["gnn_explainer"][method].append({
+                    "rate": rate, "jaccard": jacc_gnn, "pred_flipped": pert_pred != pred_class,
+                    "hai": hai_p_gnn, "hai_shift": hai_shift(hai_clean_gnn, hai_p_gnn)})
+                node_record["robustness"]["subgraph_mcts"][method].append({
+                    "rate": rate, "jaccard": jacc_mcts, "pred_flipped": pert_pred != pred_class,
+                    "hai": hai_p_mcts, "hai_shift": hai_shift(hai_clean_mcts, hai_p_mcts)})
+                node_record["robustness"]["counterfactual"][method].append({
+                    "rate": rate, "jaccard": jacc_cf, "pred_flipped": pert_pred != pred_class,
+                    "hai": hai_p_cf, "hai_shift": hai_shift(hai_clean_cf, hai_p_cf)})
                 
         results["nodes"].append(node_record)
         

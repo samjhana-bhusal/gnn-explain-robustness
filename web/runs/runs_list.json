@@ -7,6 +7,22 @@
       "model": "GCN",
       "path": "runs/run_20260709_203751.json",
       "nodes_count": 5
+    },
+    {
+      "id": "run_20260720_214814",
+      "timestamp": "2026-07-20 21:48:14",
+      "dataset": "Cora",
+      "model": "GCN",
+      "path": "runs/run_20260720_214814.json",
+      "nodes_count": 5
+    },
+    {
+      "id": "run_20260721_091116",
+      "timestamp": "2026-07-21 09:11:16",
+      "dataset": "Cora",
+      "model": "GCN",
+      "path": "runs/run_20260721_091116.json",
+      "nodes_count": 5
     }
   ]
 }
