@@ -7,7 +7,7 @@ __pycache__/
 env/
 venv/
 .pytest_cache/
-
+results/
 # Datasets & Weights
 data/
 # Experiment Runs (excluding the list catalog)

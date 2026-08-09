@@ -1,0 +1,15 @@
+This is BibTeX, Version 0.99d
+Capacity: max_strings=35307, hash_size=35307, hash_prime=30011
+The top-level auxiliary file: main.aux
+The style file: plainnat.bst
+Database file #1: ref.bib
+Name 1 in "Xie, and others" has a comma at the end for entry xie2025xgnncert
+while executing---line 1347 of file plainnat.bst
+Name 1 in "Xie, and others" has a comma at the end for entry xie2025xgnncert
+while executing---line 1347 of file plainnat.bst
+Warning--empty booktitle in agarwal2022graphxai
+Name 1 in "Xie, and others" has a comma at the end for entry xie2025xgnncert
+while executing---line 1429 of file plainnat.bst
+Name 1 in "Xie, and others" has a comma at the end for entry xie2025xgnncert
+while executing---line 1429 of file plainnat.bst
+(There were 4 error messages)
